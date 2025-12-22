@@ -1,0 +1,431 @@
+// ClinicRoute Database Schema
+// PostgreSQL with Prisma ORM
+// GDPR-compliant healthcare workflow system
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String?   @map("password_hash")
+  firstName     String    @map("first_name")
+  lastName      String    @map("last_name")
+  role          UserRole  @default(CLINICIAN)
+  isActive      Boolean   @default(true) @map("is_active")
+  auth0Id       String?   @unique @map("auth0_id")
+  
+  // Clinic association
+  clinicId      String    @map("clinic_id")
+  clinic        Clinic    @relation(fields: [clinicId], references: [id])
+  
+  // Timestamps
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  lastLoginAt   DateTime? @map("last_login_at")
+  
+  // Relations
+  assignedCases Case[]    @relation("AssignedTo")
+  createdCases  Case[]    @relation("CreatedBy")
+  auditLogs     AuditLog[]
+  
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  CLINICIAN
+}
+
+// ============================================
+// CLINIC / ORGANIZATION
+// ============================================
+
+model Clinic {
+  id              String    @id @default(uuid())
+  name            String
+  address         String?
+  phone           String?
+  email           String?
+  website         String?
+  
+  // Settings
+  slaDefaultDays  Int       @default(5) @map("sla_default_days")
+  timezone        String    @default("Europe/London")
+  
+  // Subscription (for SaaS pricing tiers)
+  subscriptionTier SubscriptionTier @default(STARTER) @map("subscription_tier")
+  subscriptionEndsAt DateTime? @map("subscription_ends_at")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  // Relations
+  users           User[]
+  cases           Case[]
+  insurerConfigs  ClinicInsurer[]
+  
+  @@map("clinics")
+}
+
+enum SubscriptionTier {
+  STARTER    // £299/month
+  GROWTH     // £799/month
+  PRO        // £1,499/month
+  ENTERPRISE // Custom
+}
+
+// ============================================
+// CASES / REFERRALS
+// ============================================
+
+model Case {
+  id                  String      @id @default(uuid())
+  referenceNumber     String      @unique @map("reference_number")
+  
+  // Patient Information (encrypted at rest in production)
+  patientFirstName    String      @map("patient_first_name")
+  patientLastName     String      @map("patient_last_name")
+  patientDob          DateTime    @map("patient_dob")
+  patientNhsNumber    String?     @map("patient_nhs_number")
+  patientEmail        String?     @map("patient_email")
+  patientPhone        String?     @map("patient_phone")
+  
+  // Referral Details
+  referralType        String      @map("referral_type")
+  referringClinician  String      @map("referring_clinician")
+  clinicalNotes       String?     @map("clinical_notes")
+  
+  // Insurer
+  insurerId           String      @map("insurer_id")
+  insurer             Insurer     @relation(fields: [insurerId], references: [id])
+  insurerPolicyNumber String?     @map("insurer_policy_number")
+  insurerAuthCode     String?     @map("insurer_auth_code")
+  
+  // Status & Workflow
+  status              CaseStatus  @default(RECEIVED)
+  priority            CasePriority @default(MEDIUM)
+  
+  // SLA Tracking
+  slaDeadline         DateTime    @map("sla_deadline")
+  slaBreached         Boolean     @default(false) @map("sla_breached")
+  
+  // Assignment
+  assignedToId        String?     @map("assigned_to_id")
+  assignedTo          User?       @relation("AssignedTo", fields: [assignedToId], references: [id])
+  
+  // Clinic
+  clinicId            String      @map("clinic_id")
+  clinic              Clinic      @relation(fields: [clinicId], references: [id])
+  
+  // Created by
+  createdById         String      @map("created_by_id")
+  createdBy           User        @relation("CreatedBy", fields: [createdById], references: [id])
+  
+  // Source tracking
+  sourceType          CaseSource  @default(PORTAL) @map("source_type")
+  sourceEmailId       String?     @map("source_email_id")
+  
+  // Timestamps
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+  submittedAt         DateTime?   @map("submitted_at")
+  approvedAt          DateTime?   @map("approved_at")
+  completedAt         DateTime?   @map("completed_at")
+  
+  // Relations
+  statusHistory       CaseStatusHistory[]
+  documents           Document[]
+  auditLogs           AuditLog[]
+  notes               CaseNote[]
+  
+  @@index([clinicId, status])
+  @@index([assignedToId])
+  @@index([slaDeadline])
+  @@index([referenceNumber])
+  @@map("cases")
+}
+
+enum CaseStatus {
+  RECEIVED
+  SUBMITTED
+  AWAITING_INSURER
+  APPROVED
+  DENIED
+  TREATMENT_SCHEDULED
+  CLOSED
+  CANCELLED
+}
+
+enum CasePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum CaseSource {
+  PORTAL       // Manual entry via web portal
+  EMAIL        // Email ingestion
+  API          // External API integration
+  PHONE        // Phone intake
+}
+
+// ============================================
+// CASE STATUS HISTORY
+// ============================================
+
+model CaseStatusHistory {
+  id            String      @id @default(uuid())
+  
+  caseId        String      @map("case_id")
+  case          Case        @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  
+  fromStatus    CaseStatus? @map("from_status")
+  toStatus      CaseStatus  @map("to_status")
+  
+  changedById   String?     @map("changed_by_id")
+  reason        String?
+  
+  createdAt     DateTime    @default(now()) @map("created_at")
+  
+  @@index([caseId])
+  @@map("case_status_history")
+}
+
+// ============================================
+// CASE NOTES
+// ============================================
+
+model CaseNote {
+  id            String    @id @default(uuid())
+  
+  caseId        String    @map("case_id")
+  case          Case      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  
+  content       String
+  isInternal    Boolean   @default(true) @map("is_internal")
+  
+  createdById   String    @map("created_by_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  
+  @@index([caseId])
+  @@map("case_notes")
+}
+
+// ============================================
+// INSURERS
+// ============================================
+
+model Insurer {
+  id              String    @id @default(uuid())
+  name            String    @unique
+  code            String    @unique
+  
+  // Contact
+  contactEmail    String?   @map("contact_email")
+  contactPhone    String?   @map("contact_phone")
+  portalUrl       String?   @map("portal_url")
+  
+  // Processing
+  avgResponseDays Int       @default(3) @map("avg_response_days")
+  
+  // Status
+  isActive        Boolean   @default(true) @map("is_active")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  // Relations
+  cases           Case[]
+  clinicConfigs   ClinicInsurer[]
+  
+  @@map("insurers")
+}
+
+// Clinic-specific insurer configuration
+model ClinicInsurer {
+  id              String    @id @default(uuid())
+  
+  clinicId        String    @map("clinic_id")
+  clinic          Clinic    @relation(fields: [clinicId], references: [id])
+  
+  insurerId       String    @map("insurer_id")
+  insurer         Insurer   @relation(fields: [insurerId], references: [id])
+  
+  // Clinic-specific settings
+  providerNumber  String?   @map("provider_number")
+  apiKey          String?   @map("api_key")
+  customSladays   Int?      @map("custom_sla_days")
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  
+  @@unique([clinicId, insurerId])
+  @@map("clinic_insurers")
+}
+
+// ============================================
+// DOCUMENTS
+// ============================================
+
+model Document {
+  id              String        @id @default(uuid())
+  
+  caseId          String        @map("case_id")
+  case            Case          @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  
+  filename        String
+  originalName    String        @map("original_name")
+  mimeType        String        @map("mime_type")
+  sizeBytes       Int           @map("size_bytes")
+  
+  // S3 storage
+  s3Bucket        String        @map("s3_bucket")
+  s3Key           String        @map("s3_key")
+  
+  // Document type
+  documentType    DocumentType  @default(OTHER) @map("document_type")
+  
+  // Upload info
+  uploadedById    String        @map("uploaded_by_id")
+  
+  // Timestamps
+  createdAt       DateTime      @default(now()) @map("created_at")
+  
+  // Soft delete for GDPR compliance
+  deletedAt       DateTime?     @map("deleted_at")
+  
+  @@index([caseId])
+  @@map("documents")
+}
+
+enum DocumentType {
+  REFERRAL_LETTER
+  CLINICAL_NOTES
+  INSURANCE_FORM
+  AUTHORIZATION
+  LAB_RESULTS
+  IMAGING
+  CONSENT_FORM
+  CORRESPONDENCE
+  OTHER
+}
+
+// ============================================
+// AUDIT LOG (GDPR COMPLIANCE)
+// ============================================
+
+model AuditLog {
+  id              String      @id @default(uuid())
+  
+  // What was affected
+  entityType      String      @map("entity_type")
+  entityId        String      @map("entity_id")
+  
+  // What happened
+  action          AuditAction
+  description     String
+  
+  // Before/After for data changes (JSON)
+  previousValue   Json?       @map("previous_value")
+  newValue        Json?       @map("new_value")
+  
+  // Who did it
+  userId          String?     @map("user_id")
+  user            User?       @relation(fields: [userId], references: [id])
+  
+  // Optional case link
+  caseId          String?     @map("case_id")
+  case            Case?       @relation(fields: [caseId], references: [id])
+  
+  // Request metadata
+  ipAddress       String?     @map("ip_address")
+  userAgent       String?     @map("user_agent")
+  
+  // Timestamp (immutable)
+  createdAt       DateTime    @default(now()) @map("created_at")
+  
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([caseId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  VIEW
+  EXPORT
+  LOGIN
+  LOGOUT
+  STATUS_CHANGE
+  ASSIGNMENT_CHANGE
+  DOCUMENT_UPLOAD
+  DOCUMENT_DOWNLOAD
+  DOCUMENT_DELETE
+  EMAIL_SENT
+  NOTE_ADDED
+}
+
+// ============================================
+// EMAIL INGESTION
+// ============================================
+
+model IngestedEmail {
+  id              String    @id @default(uuid())
+  
+  messageId       String    @unique @map("message_id")
+  fromAddress     String    @map("from_address")
+  toAddress       String    @map("to_address")
+  subject         String
+  bodyText        String?   @map("body_text")
+  bodyHtml        String?   @map("body_html")
+  
+  // Processing status
+  processed       Boolean   @default(false)
+  processedAt     DateTime? @map("processed_at")
+  linkedCaseId    String?   @map("linked_case_id")
+  
+  // Error handling
+  processingError String?   @map("processing_error")
+  
+  // Timestamps
+  receivedAt      DateTime  @map("received_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  
+  @@index([processed])
+  @@map("ingested_emails")
+}
+
+// ============================================
+// REFERRAL TYPES
+// ============================================
+
+model ReferralType {
+  id              String    @id @default(uuid())
+  name            String    @unique
+  code            String    @unique
+  description     String?
+  defaultSlaDays  Int       @default(5) @map("default_sla_days")
+  isActive        Boolean   @default(true) @map("is_active")
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  @@map("referral_types")
+}
