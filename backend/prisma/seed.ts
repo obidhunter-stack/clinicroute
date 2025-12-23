@@ -216,9 +216,12 @@ async function main() {
   const emma = users.find(u => u.email === 'emma.thompson@democlinic.co.uk')!;
   const sophie = users.find(u => u.email === 'sophie.clark@democlinic.co.uk')!;
 
+  // Use upsert for cases - keyed by reference_number for idempotency
   const cases = await Promise.all([
-    prisma.case.create({
-      data: {
+    prisma.case.upsert({
+      where: { referenceNumber: 'REF-2024-0001' },
+      update: {},
+      create: {
         referenceNumber: 'REF-2024-0001',
         patientFirstName: 'Sarah',
         patientLastName: 'Mitchell',
@@ -237,8 +240,10 @@ async function main() {
         submittedAt: new Date(Date.now() - 1.5 * 24 * 60 * 60 * 1000),
       },
     }),
-    prisma.case.create({
-      data: {
+    prisma.case.upsert({
+      where: { referenceNumber: 'REF-2024-0002' },
+      update: {},
+      create: {
         referenceNumber: 'REF-2024-0002',
         patientFirstName: 'Michael',
         patientLastName: 'Roberts',
@@ -256,8 +261,10 @@ async function main() {
         approvedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000),
       },
     }),
-    prisma.case.create({
-      data: {
+    prisma.case.upsert({
+      where: { referenceNumber: 'REF-2024-0003' },
+      update: {},
+      create: {
         referenceNumber: 'REF-2024-0003',
         patientFirstName: 'Emily',
         patientLastName: 'Watson',
@@ -274,8 +281,10 @@ async function main() {
         assignedToId: emma.id,
       },
     }),
-    prisma.case.create({
-      data: {
+    prisma.case.upsert({
+      where: { referenceNumber: 'REF-2024-0004' },
+      update: {},
+      create: {
         referenceNumber: 'REF-2024-0004',
         patientFirstName: 'David',
         patientLastName: 'Chen',
@@ -286,7 +295,7 @@ async function main() {
         insurerId: bupa.id,
         status: 'SUBMITTED',
         priority: 'HIGH',
-        slaDeadline: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000), // Overdue!
+        slaDeadline: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000),
         slaBreached: true,
         clinicId: clinic.id,
         createdById: sophie.id,
@@ -294,8 +303,10 @@ async function main() {
         submittedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
       },
     }),
-    prisma.case.create({
-      data: {
+    prisma.case.upsert({
+      where: { referenceNumber: 'REF-2024-0005' },
+      update: {},
+      create: {
         referenceNumber: 'REF-2024-0005',
         patientFirstName: 'Jessica',
         patientLastName: 'Brown',
@@ -313,8 +324,10 @@ async function main() {
         approvedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
       },
     }),
-    prisma.case.create({
-      data: {
+    prisma.case.upsert({
+      where: { referenceNumber: 'REF-2024-0006' },
+      update: {},
+      create: {
         referenceNumber: 'REF-2024-0006',
         patientFirstName: 'Thomas',
         patientLastName: 'Wright',
@@ -337,30 +350,40 @@ async function main() {
   console.log(`✅ Created ${cases.length} demo cases`);
 
   // ============================================
-  // AUDIT LOGS
+  // AUDIT LOGS (only create if case was just created)
   // ============================================
   console.log('Creating audit logs...');
 
   for (const caseData of cases) {
-    await prisma.auditLog.create({
-      data: {
-        action: 'CREATE',
-        entityType: 'Case',
-        entityId: caseData.id,
-        description: `Case ${caseData.referenceNumber} created`,
-        userId: caseData.createdById,
+    // Check if audit log already exists for this case
+    const existingLog = await prisma.auditLog.findFirst({
+      where: {
         caseId: caseData.id,
+        action: 'CREATE',
       },
     });
 
-    await prisma.caseStatusHistory.create({
-      data: {
-        caseId: caseData.id,
-        toStatus: 'RECEIVED',
-        changedById: caseData.createdById,
-        reason: 'Case created',
-      },
-    });
+    if (!existingLog) {
+      await prisma.auditLog.create({
+        data: {
+          action: 'CREATE',
+          entityType: 'Case',
+          entityId: caseData.id,
+          description: `Case ${caseData.referenceNumber} created`,
+          userId: caseData.createdById,
+          caseId: caseData.id,
+        },
+      });
+
+      await prisma.caseStatusHistory.create({
+        data: {
+          caseId: caseData.id,
+          toStatus: 'RECEIVED',
+          changedById: caseData.createdById,
+          reason: 'Case created',
+        },
+      });
+    }
   }
 
   console.log('✅ Created audit logs and status history');
